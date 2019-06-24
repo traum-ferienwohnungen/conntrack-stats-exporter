@@ -48,7 +48,8 @@ var metricNames = []string{
 // Exporter exports stats from the conntrack CLI. The metrics are named with
 // prefix `conntrack_stats_*`.
 type Exporter struct {
-	descriptors map[string]*prometheus.Desc
+	descriptors    map[string]*prometheus.Desc
+	timeoutCounter prometheus.Counter
 }
 
 // New creates a new conntrack stats exporter.
@@ -62,6 +63,13 @@ func New() *Exporter {
 			nil,
 		)
 	}
+	e.timeoutCounter = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: prometheus.BuildFQName(promNamespace, promSubSystem, "ctxtimeout"),
+			Help: "Context timeouts calling 'conntrack' command",
+		},
+	)
+
 	return e
 }
 
@@ -71,11 +79,17 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	for _, g := range e.descriptors {
 		ch <- g
 	}
+	e.timeoutCounter.Describe(ch)
 }
 
 // Collect implements the collect method of the prometheus.Collector interface.
 func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
-	metrics := getMetrics()
+	metrics, err := getMetrics()
+	if err != nil {
+		e.timeoutCounter.Inc()
+		e.timeoutCounter.Collect(ch)
+		return
+	}
 	for metricName, desc := range e.descriptors {
 		for _, metricPerCPU := range metrics {
 			cpu, ok := metricPerCPU["cpu"]
@@ -98,8 +112,11 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 type metricsPerCPU []map[string]int
 
-func getMetrics() metricsPerCPU {
-	lines := callConntrackTool()
+func getMetrics() (metricsPerCPU, error) {
+	lines, err := callConntrackTool()
+	if err != nil {
+		return nil, err
+	}
 
 	metrics := make(metricsPerCPU, len(lines))
 ParseEachOutputLine:
@@ -124,15 +141,18 @@ ParseEachOutputLine:
 			metrics[cpu] = metric
 		}
 	}
-	return metrics
+	return metrics, nil
 }
 
-func callConntrackTool() []string {
+func callConntrackTool() ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3e9)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "conntrack", "--stats")
 	out, err := cmd.Output()
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, context.DeadlineExceeded
+	}
 	if err != nil {
 		panic(err)
 	}
@@ -144,7 +164,7 @@ func callConntrackTool() []string {
 	if scanner.Err() != nil {
 		panic(err)
 	}
-	return lines
+	return lines, nil
 }
 
 var regex = regexp.MustCompile(`([a-z_]+)=(\d+)`)
