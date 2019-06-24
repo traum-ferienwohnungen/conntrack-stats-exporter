@@ -24,6 +24,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -145,7 +146,7 @@ ParseEachOutputLine:
 }
 
 func callConntrackTool() ([]string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3e9)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "conntrack", "--stats")
